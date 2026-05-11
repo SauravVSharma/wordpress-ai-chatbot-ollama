@@ -1,0 +1,215 @@
+<?php
+/*
+Plugin Name: Simple AI Chatbot
+Description: Local AI chatbot using Ollama + WordPress
+Version: 2.0
+*/
+
+add_shortcode('ai_chatbot', 'ai_chatbot_ui');
+
+function ai_chatbot_ui() {
+
+    ob_start();
+    ?>
+
+    <div id="ai-chat-wrapper" style="max-width:700px; margin:auto;">
+
+        <div id="ai-chat-box"
+             style="
+                height:400px;
+                overflow:auto;
+                border:1px solid #ccc;
+                padding:15px;
+                margin-bottom:10px;
+                background:#f9f9f9;
+                border-radius:10px;
+             ">
+        </div>
+
+        <div style="display:flex; gap:10px;">
+
+            <input type="text"
+                   id="ai-user-message"
+                   placeholder="Type message..."
+                   style="
+                        flex:1;
+                        padding:12px;
+                        border:1px solid #ccc;
+                        border-radius:6px;
+                   ">
+
+            <button onclick="sendAIMessage()"
+                    style="
+                        padding:12px 20px;
+                        cursor:pointer;
+                    ">
+                Send
+            </button>
+
+        </div>
+
+    </div>
+
+    <script>
+
+    let chatBox = document.getElementById('ai-chat-box');
+
+    // Load saved chat on page reload
+    window.onload = function() {
+
+        let savedChat = localStorage.getItem('ai_chat_history');
+
+        if(savedChat) {
+
+            chatBox.innerHTML = savedChat;
+
+            chatBox.scrollTop = chatBox.scrollHeight;
+        }
+    };
+
+    // Enter key support
+    document.addEventListener('DOMContentLoaded', function() {
+
+        document.getElementById('ai-user-message')
+            .addEventListener('keypress', function(e) {
+
+                if(e.key === 'Enter') {
+
+                    e.preventDefault();
+
+                    sendAIMessage();
+                }
+            });
+    });
+
+    async function sendAIMessage() {
+
+        let input = document.getElementById('ai-user-message');
+
+        let msg = input.value;
+
+        if(msg.trim() === '') {
+            return;
+        }
+
+        // User message
+        chatBox.innerHTML += `
+            <div style="margin-bottom:12px;">
+                <b>You:</b><br>
+                ${msg}
+            </div>
+        `;
+
+        input.value = '';
+
+        chatBox.scrollTop = chatBox.scrollHeight;
+
+        // Save chat
+        localStorage.setItem('ai_chat_history', chatBox.innerHTML);
+
+        // Loading message
+        let loadingId = 'loading-' + Date.now();
+
+        chatBox.innerHTML += `
+            <div id="${loadingId}" style="margin-bottom:12px;">
+                <b>AI:</b><br>
+                Thinking...
+            </div>
+        `;
+
+        chatBox.scrollTop = chatBox.scrollHeight;
+
+        try {
+
+            let response = await fetch('<?php echo admin_url('admin-ajax.php'); ?>', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded'
+                },
+                body: 'action=ai_chat_message&message=' + encodeURIComponent(msg)
+            });
+
+            let data = await response.json();
+
+            document.getElementById(loadingId).innerHTML = `
+                <b>AI:</b><br>
+                ${data.reply}
+            `;
+
+        } catch(error) {
+
+            document.getElementById(loadingId).innerHTML = `
+                <b>AI:</b><br>
+                Error connecting to chatbot
+            `;
+        }
+
+        // Save updated chat
+        localStorage.setItem('ai_chat_history', chatBox.innerHTML);
+
+        chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    </script>
+
+    <?php
+    return ob_get_clean();
+}
+
+add_action('wp_ajax_ai_chat_message', 'ai_chat_message');
+add_action('wp_ajax_nopriv_ai_chat_message', 'ai_chat_message');
+
+function ai_chat_message() {
+
+    $message = sanitize_text_field($_POST['message']);
+
+    $response = wp_remote_post(
+        'http://127.0.0.1:11434/api/generate',
+        [
+            'headers' => [
+                'Content-Type' => 'application/json',
+            ],
+            'body' => json_encode([
+                'model' => 'llama3',
+                'prompt' => $message,
+                'stream' => false
+            ]),
+            'timeout' => 120
+        ]
+    );
+
+    // Connection error
+    if (is_wp_error($response)) {
+
+        wp_send_json([
+            'reply' => 'WP Error: ' . $response->get_error_message()
+        ]);
+    }
+
+    // Raw response
+    $raw_body = wp_remote_retrieve_body($response);
+
+    // Decode JSON
+    $body = json_decode($raw_body, true);
+
+    // Invalid response
+    if (!$body) {
+
+        wp_send_json([
+            'reply' => 'Invalid JSON response'
+        ]);
+    }
+
+    // Success
+    if (isset($body['response'])) {
+
+        wp_send_json([
+            'reply' => nl2br($body['response'])
+        ]);
+    }
+
+    // Fallback
+    wp_send_json([
+        'reply' => 'Unexpected response'
+    ]);
+}
